@@ -30,7 +30,6 @@ The repository root must contain:
 
 ```text
 Dockerfile
-railway.json
 package.json
 prisma/
 src/
@@ -44,7 +43,7 @@ Do not put the project inside an extra nested folder.
 1. In Railway, choose **New Project**.
 2. Select **Deploy from GitHub repo**.
 3. Choose this repository.
-4. Railway will detect the root `Dockerfile` automatically. Do not set a custom Dockerfile path.
+4. Railway will detect the root `Dockerfile` automatically. Do not set a custom root directory, config path, or Dockerfile path.
 
 ### 3. Add PostgreSQL
 
