@@ -1,0 +1,205 @@
+import type { BlacklistEntry, GuildConfig } from '@prisma/client';
+import {
+  EmbedBuilder,
+  Events,
+  PermissionFlagsBits,
+  type Guild,
+  type GuildMember as DiscordGuildMember,
+} from 'discord.js';
+import { client } from './bot.js';
+import { config } from './config.js';
+import { prisma } from './db.js';
+import { TaskQueue } from './task-queue.js';
+
+const queue = new TaskQueue();
+
+type Trigger = 'BLACKLIST_ADDED' | 'MEMBER_JOIN' | 'MANUAL';
+
+async function ensureGuildConfig(guild: Guild): Promise<GuildConfig> {
+  return prisma.guildConfig.upsert({
+    where: { guildId: guild.id },
+    create: {
+      guildId: guild.id,
+      guildName: guild.name,
+      enabled: false,
+      dryRun: true,
+    },
+    update: { guildName: guild.name },
+  });
+}
+
+async function writeLog(input: {
+  guild: Guild;
+  guildConfig: GuildConfig;
+  entry: BlacklistEntry;
+  action: string;
+  success: boolean;
+  trigger: Trigger;
+  details?: string;
+}): Promise<void> {
+  await prisma.enforcementLog.create({
+    data: {
+      blacklistId: input.entry.id,
+      guildId: input.guild.id,
+      userId: input.entry.userId,
+      action: input.action,
+      success: input.success,
+      details: input.details ?? null,
+    },
+  });
+
+  if (!input.guildConfig.logChannelId) return;
+  const channel = input.guild.channels.cache.get(input.guildConfig.logChannelId);
+  if (!channel?.isTextBased() || channel.isThread() || !('send' in channel)) return;
+
+  const embed = new EmbedBuilder()
+    .setTitle(input.success ? 'Blacklist enforcement' : 'Blacklist enforcement issue')
+    .setDescription(input.details ?? input.action)
+    .addFields(
+      { name: 'User ID', value: input.entry.userId, inline: true },
+      { name: 'Action', value: input.action, inline: true },
+      { name: 'Trigger', value: input.trigger, inline: true },
+      { name: 'Reason', value: input.entry.reason.slice(0, 1024) },
+    )
+    .setTimestamp();
+
+  await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => undefined);
+}
+
+async function enforceMember(
+  member: DiscordGuildMember,
+  entry: BlacklistEntry,
+  trigger: Trigger,
+): Promise<void> {
+  const guild = member.guild;
+  const guildConfig = await ensureGuildConfig(guild);
+  if (!guildConfig.enabled) return;
+
+  if (member.id === guild.ownerId) {
+    await writeLog({
+      guild,
+      guildConfig,
+      entry,
+      trigger,
+      action: 'SKIPPED_SERVER_OWNER',
+      success: false,
+      details: 'The server owner can never be banned by the bot.',
+    });
+    return;
+  }
+
+  const botMember = await guild.members.fetchMe();
+  if (!botMember.permissions.has(PermissionFlagsBits.BanMembers)) {
+    await prisma.blacklistEntry.update({
+      where: { id: entry.id },
+      data: { failedBans: { increment: 1 } },
+    });
+    await writeLog({
+      guild,
+      guildConfig,
+      entry,
+      trigger,
+      action: 'MISSING_BAN_PERMISSION',
+      success: false,
+      details: 'The bot does not have the Ban Members permission.',
+    });
+    return;
+  }
+
+  if (member.roles.highest.position >= botMember.roles.highest.position) {
+    await prisma.blacklistEntry.update({
+      where: { id: entry.id },
+      data: { failedBans: { increment: 1 } },
+    });
+    await writeLog({
+      guild,
+      guildConfig,
+      entry,
+      trigger,
+      action: 'ROLE_HIERARCHY_BLOCKED',
+      success: false,
+      details: 'Move the bot role above this member’s highest role.',
+    });
+    return;
+  }
+
+  if (config.globalDryRun || guildConfig.dryRun) {
+    await writeLog({
+      guild,
+      guildConfig,
+      entry,
+      trigger,
+      action: 'DRY_RUN',
+      success: true,
+      details: 'Dry-run mode is enabled. The member would have been banned.',
+    });
+    return;
+  }
+
+  try {
+    await member.ban({ reason: `Shared blacklist: ${entry.reason}`.slice(0, 500) });
+    await prisma.blacklistEntry.update({
+      where: { id: entry.id },
+      data: { successfulBans: { increment: 1 } },
+    });
+    await writeLog({
+      guild,
+      guildConfig,
+      entry,
+      trigger,
+      action: 'BANNED',
+      success: true,
+      details: `${entry.username ?? entry.userId} was banned from ${guild.name}.`,
+    });
+  } catch (error) {
+    const details = error instanceof Error ? error.message : 'Unknown Discord API error';
+    await prisma.blacklistEntry.update({
+      where: { id: entry.id },
+      data: { failedBans: { increment: 1 } },
+    });
+    await writeLog({
+      guild,
+      guildConfig,
+      entry,
+      trigger,
+      action: 'BAN_FAILED',
+      success: false,
+      details,
+    });
+  }
+}
+
+export function queueSweep(entry: BlacklistEntry, trigger: Trigger = 'BLACKLIST_ADDED'): void {
+  queue.add(async () => {
+    const enabledGuilds = await prisma.guildConfig.findMany({ where: { enabled: true } });
+    for (const guildConfig of enabledGuilds) {
+      const guild = client.guilds.cache.get(guildConfig.guildId);
+      if (!guild) continue;
+      const member = await guild.members.fetch(entry.userId).catch(() => null);
+      if (member) await enforceMember(member, entry, trigger);
+    }
+  });
+}
+
+export function registerEnforcementEvents(): void {
+  client.on(Events.GuildMemberAdd, async (member) => {
+    const entry = await prisma.blacklistEntry.findUnique({
+      where: { userId: member.id },
+    });
+    if (!entry?.active) return;
+    queue.add(() => enforceMember(member, entry, 'MEMBER_JOIN'));
+  });
+}
+
+export async function getGuildHealth(guild: Guild): Promise<{
+  hasBanPermission: boolean;
+  botRoleName: string;
+  botRolePosition: number;
+}> {
+  const botMember = await guild.members.fetchMe();
+  return {
+    hasBanPermission: botMember.permissions.has(PermissionFlagsBits.BanMembers),
+    botRoleName: botMember.roles.highest.name,
+    botRolePosition: botMember.roles.highest.position,
+  };
+}

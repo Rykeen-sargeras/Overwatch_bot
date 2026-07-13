@@ -1,0 +1,31 @@
+import { startBot } from './bot.js';
+import { config } from './config.js';
+import { prisma } from './db.js';
+import { registerEnforcementEvents } from './enforcement.js';
+import { createServer } from './server.js';
+
+async function main(): Promise<void> {
+  registerEnforcementEvents();
+  await startBot();
+
+  const app = createServer();
+  const server = app.listen(config.port, '0.0.0.0', () => {
+    console.log(`Dashboard listening on port ${config.port}`);
+  });
+
+  const shutdown = async (signal: string) => {
+    console.log(`Received ${signal}; shutting down.`);
+    server.close();
+    await prisma.$disconnect();
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+}
+
+main().catch(async (error: unknown) => {
+  console.error('Startup failed:', error);
+  await prisma.$disconnect();
+  process.exit(1);
+});

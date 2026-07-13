@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model BlacklistEntry {
+  id             String           @id @default(cuid())
+  userId         String           @unique
+  username       String?
+  reason         String           @db.Text
+  active         Boolean          @default(true)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  removedAt      DateTime?
+  successfulBans Int              @default(0)
+  failedBans     Int              @default(0)
+  logs           EnforcementLog[]
+
+  @@index([active])
+  @@index([createdAt])
+}
+
+model GuildConfig {
+  guildId       String           @id
+  guildName     String
+  enabled       Boolean          @default(false)
+  logChannelId  String?
+  dryRun        Boolean          @default(true)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  logs          EnforcementLog[]
+
+  @@index([enabled])
+}
+
+model EnforcementLog {
+  id          String          @id @default(cuid())
+  blacklistId String?
+  guildId     String
+  userId      String
+  action      String
+  success     Boolean         @default(false)
+  details     String?         @db.Text
+  createdAt   DateTime        @default(now())
+
+  blacklist   BlacklistEntry? @relation(fields: [blacklistId], references: [id], onDelete: SetNull)
+  guild       GuildConfig     @relation(fields: [guildId], references: [guildId], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([guildId, createdAt])
+  @@index([userId, createdAt])
+}

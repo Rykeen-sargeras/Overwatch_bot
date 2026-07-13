@@ -1,0 +1,11 @@
+# Required
+DISCORD_TOKEN=your_discord_bot_token
+ADMIN_PASSWORD=choose_a_strong_dashboard_password
+SESSION_SECRET=choose_a_long_random_session_secret
+DATABASE_URL=postgresql://user:password@host:5432/database
+
+# Recommended while testing. Change to false only after verifying permissions.
+GLOBAL_DRY_RUN=true
+
+# Railway supplies PORT automatically.
+PORT=3000

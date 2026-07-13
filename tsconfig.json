@@ -1,0 +1,164 @@
+# Discord Blacklist Dashboard — Simple Railway Edition
+
+This version is intentionally simple:
+
+- One Railway code service
+- One Railway PostgreSQL database
+- One web domain
+- No Redis
+- No separate API, bot, or dashboard services
+- No slash commands
+- No Discord OAuth setup
+
+The same Node process runs the Discord bot and the private web dashboard.
+
+## What it does
+
+- Add and remove Discord user IDs from a shared blacklist
+- Check enabled servers immediately when a user is blacklisted
+- Check blacklisted users again whenever they join an enabled server
+- Ban them automatically when live enforcement is enabled
+- Post enforcement logs to a selected Discord channel
+- Protect the server owner and respect Discord role hierarchy
+- Keep global and per-server dry-run switches for safe testing
+
+## Deploy to Railway
+
+### 1. Push this folder to GitHub
+
+The repository root must contain:
+
+```text
+Dockerfile
+railway.json
+package.json
+prisma/
+src/
+public/
+```
+
+Do not put the project inside an extra nested folder.
+
+### 2. Create the Railway app
+
+1. In Railway, choose **New Project**.
+2. Select **Deploy from GitHub repo**.
+3. Choose this repository.
+4. Railway will detect the root `Dockerfile` automatically. Do not set a custom Dockerfile path.
+
+### 3. Add PostgreSQL
+
+Inside the same Railway project:
+
+1. Click **New**.
+2. Choose **Database**.
+3. Choose **PostgreSQL**.
+
+Then open the code service’s **Variables** page and add a reference:
+
+```text
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+```
+
+Use Railway’s variable picker if your database service has a different name.
+
+### 4. Add four variables to the code service
+
+```env
+DISCORD_TOKEN=your_bot_token
+ADMIN_PASSWORD=your_private_dashboard_password
+SESSION_SECRET=a_long_random_secret_at_least_24_characters
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+GLOBAL_DRY_RUN=true
+```
+
+`PORT` is supplied automatically by Railway.
+
+Generate a session secret locally with:
+
+```bash
+openssl rand -hex 32
+```
+
+### 5. Generate the domain
+
+Open the code service:
+
+1. Go to **Settings**.
+2. Open **Networking**.
+3. Click **Generate Domain**.
+4. Open the domain.
+5. Log in with `ADMIN_PASSWORD`.
+
+That webpage controls the blacklist, servers, log channels, and dry-run settings.
+
+## Discord Developer Portal
+
+Open your Discord application.
+
+### Bot tab
+
+Enable:
+
+```text
+Server Members Intent
+```
+
+Leave Message Content Intent off.
+
+Copy the bot token into Railway as `DISCORD_TOKEN`.
+
+### Bot permissions
+
+The dashboard gives you an **Add bot to a server** button after deployment. The install link requests:
+
+- View Channels
+- Send Messages
+- Embed Links
+- Read Message History
+- Ban Members
+
+After adding the bot, move its Discord role above every role it may need to ban.
+
+## Safe first test
+
+Keep:
+
+```env
+GLOBAL_DRY_RUN=true
+```
+
+Then:
+
+1. Open the Railway domain.
+2. Log in.
+3. Open **Servers**.
+4. Select a log channel.
+5. Enable the server.
+6. Keep the server dry-run checkbox enabled.
+7. Add a test Discord user ID to the blacklist.
+8. Check the webpage logs and Discord log channel.
+
+When everything is correct:
+
+1. Change `GLOBAL_DRY_RUN=false` in Railway.
+2. Turn off dry-run only for servers where you want real bans.
+
+## Important behavior
+
+- Removing a blacklist entry does not automatically unban the person from servers.
+- The bot cannot ban a server owner.
+- The bot cannot ban anyone whose highest role is equal to or above the bot’s highest role.
+- Usernames are informational only. Enforcement always uses permanent Discord user IDs.
+- The dashboard uses a private password instead of Discord OAuth to keep deployment simple.
+
+## Local development
+
+```bash
+cp .env.example .env
+npm install
+npx prisma db push
+npm run dev
+```
+
+Open `http://localhost:3000`.
